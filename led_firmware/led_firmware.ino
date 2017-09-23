@@ -63,6 +63,7 @@ void loop() {
       Serial.print("BRIGHTNESS: ");
     } else if (bite == RESET) {
       Serial.print("RESET");
+      reset();
     } else if (bite == NOTE_ON) {
       mode = NOTE_ON;
       byteNum = 0;

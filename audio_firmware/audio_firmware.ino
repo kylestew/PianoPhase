@@ -291,6 +291,9 @@ void restartMusic() {
   updateMetro();
   metro.reset();
 
+  // next animation
+  sendCommand(RESET);
+
   // increment voice
   voiceIdx++;
   if (voiceIdx >= NUM_VOICES) voiceIdx = 0;
@@ -439,6 +442,10 @@ byte noteOn(byte note) {
 }
 
 /* === SLAVE LEDs === */
+
+void sendCommand(SLAVE_COMMAND command) {
+  Serial1.write(command);
+}
 
 void sendCommand(SLAVE_COMMAND command, byte value) {
   Serial1.write(command);
