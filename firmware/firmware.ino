@@ -1,67 +1,38 @@
 #include <Bounce.h>
 #include <FastLED.h>
 #include <Metro.h>
-// #define ENCODER_OPTIMIZE_INTERRUPTS
+#define ENCODER_OPTIMIZE_INTERRUPTS
 #include <Encoder.h>
 #include "piano_phase.h"
-
-
 #include <Audio.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
 #include <SerialFlash.h>
 
-// GUItool: begin automatically generated code
-AudioSynthWaveform       osc1;           //xy=142,601
-AudioSynthWaveform       osc2;           //xy=144,640
-AudioSynthWaveformPWM    pwm1;           //xy=144,909
-AudioSynthWaveformDc     dc1;            //xy=158,696
-AudioMixer4              oscmix;         //xy=301,620
-AudioEffectEnvelope      filterEnv;      //xy=301,695
-AudioEffectBitcrusher    bitcrusher1;    //xy=314,914
-AudioEffectFlange        flange1;        //xy=324,974
-AudioFilterStateVariable filter2; //xy=472,625
-AudioSynthSimpleDrum     drum1;          //xy=558,953
-AudioSynthSimpleDrum     drum2;          //xy=559,990
-AudioMixer4              voiceSelect;         //xy=819,587
-AudioMixer4              mixer3;         //xy=882,965
-AudioEffectDelay         phaseDelay;         //xy=985,687
-AudioMixer4              phaseMix;         //xy=1134,606
-AudioEffectReverb        reverb1;        //xy=1369,675
-AudioSynthKarplusStrong  string1;        //xy=1476,473
-AudioEffectFade          fade;          //xy=1619,600
-AudioOutputI2S           out;           //xy=1735,496
-AudioConnection          patchCord1(osc1, 0, oscmix, 0);
-AudioConnection          patchCord2(osc2, 0, oscmix, 1);
-AudioConnection          patchCord3(dc1, filterEnv);
-AudioConnection          patchCord4(oscmix, 0, filter2, 0);
-AudioConnection          patchCord5(filterEnv, 0, filter2, 1);
-AudioConnection          patchCord6(filter2, 0, voiceSelect, 1);
-AudioConnection          patchCord7(drum1, 0, mixer3, 0);
-AudioConnection          patchCord8(drum2, 0, mixer3, 1);
-AudioConnection          patchCord9(voiceSelect, 0, phaseMix, 0);
-AudioConnection          patchCord10(voiceSelect, phaseDelay);
-AudioConnection          patchCord11(phaseDelay, 0, phaseMix, 1);
-AudioConnection          patchCord12(phaseMix, fade);
-AudioConnection          patchCord13(string1, 0, out, 0);
-AudioConnection          patchCord14(string1, 0, out, 1);
-AudioControlSGTL5000     sgtl5000_1;     //xy=1756,657
-// GUItool: end automatically generated code
-
-
 #define SERIAL_DEBUG     true
 
-// AUDIO SHIELD
+// AUDIO CONNECTIONS
 // RESERVED PINS: 9, 11, 13, 18, 19, 22, 23
+
+// VOICE 1
+AudioSynthKarplusStrong  stringVoice;
+
+// OUTPUT
+AudioControlSGTL5000     sgtl5000;
+AudioOutputI2S           i2sOut;
+
+// WIRING
+AudioConnection          patchCord13(stringVoice, 0, i2sOut, 0);
+AudioConnection          patchCord14(stringVoice, 0, i2sOut, 1);
 
 // EFFECTS:
 // CHORUS
-#define CHORUS_DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
-short delayline[CHORUS_DELAY_LENGTH];
+// #define CHORUS_DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
+// short delayline[CHORUS_DELAY_LENGTH];
 
 // LEDS
-#define NUM_LEDS    25
+#define NUM_LEDS    24
 #define DATA_PIN    24   // YELLOW
 #define CLOCK_PIN   25   // GREEN
 CRGB leds [NUM_LEDS];
@@ -71,6 +42,7 @@ const int MAX_BRIGHT = 220;
 int brightness = DEFAULT_BRIGHT;
 
 // VOLUME POT
+// TODO: average input to filter
 const int VOL_POT = A1; // PIN 15
 int volume = 0;
 const float MAX_VOLUME = 0.8;
@@ -91,12 +63,14 @@ int controlMode = 0;    // 0 (BLU) == Phase
                         // 2 (RED) == LED brightness
 
 // PHASE
+// TODO: fix phase scratching
 const int DEFAULT_PHASE = 0;
 const int MIN_PHASE = 0;
 const int MAX_PHASE = 512;
 int phase = DEFAULT_PHASE;
 
 // TEMPO
+// TODO: update ranges for new 4x mode
 const int DEFAULT_TEMPO = 214; // synced to source material
 const int MIN_TEMPO = 0;
 const int MAX_TEMPO = 256;
@@ -120,6 +94,7 @@ void setup() {
   }
 
   // Encoder LEDs sink current
+  pinMode(ENC_BUTTON, INPUT);
   pinMode(ledPins[RED], OUTPUT);
   digitalWrite(ledPins[RED], 1); // high = off
   pinMode(ledPins[GREEN], OUTPUT);
@@ -128,12 +103,10 @@ void setup() {
   digitalWrite(ledPins[BLUE], 1); // high = off
 
   // audio setup
-  AudioMemory(12); // large memory needed for delay
-  sgtl5000_1.enable();
-  sgtl5000_1.volume(volume);
+  AudioMemory(24); // TODO: calc delay length
+  sgtl5000.enable();
+  sgtl5000.volume(volume);
   pinMode(VOL_POT, INPUT);
-
-  pinMode(ENC_BUTTON, INPUT);
 
   // LEDs
   // pinMode(DATA_PIN, OUTPUT);
@@ -160,7 +133,7 @@ void loop() {
     Serial.print("VOL: ");
     Serial.println(volume);
 
-    sgtl5000_1.volume(map((float)n, 0.0, 32.0, 0.0, MAX_VOLUME));
+    sgtl5000.volume(map((float)n, 0.0, 32.0, 0.0, MAX_VOLUME));
   }
 
   // mode switch
@@ -178,25 +151,23 @@ void loop() {
     enc.write(encPos); // write bounded value back to encoder
   }
 
-  /*
   // play the music
   if (playTimer.check() == 1) {
-    // stop playing
-    stopMusic();
-
-    // stop taking input
-    setMode(-1);
-
-    // visually take a break
-    interlude();
-
-    // run again
-    setMode(0);
-    restartMusic();
+    // // stop playing
+    // stopMusic();
+    //
+    // // stop taking input
+    // setMode(-1);
+    //
+    // // visually take a break
+    // interlude();
+    //
+    // // run again
+    // setMode(0);
+    // restartMusic();
   } else if (metro.check() == 1) {
     nextBeat();
   }
-  */
 
   // TEMP: make sure LEDs light
   // test();
@@ -269,7 +240,7 @@ void updateMetro() {
 /* === Music Coordinator === */
 
 void stopMusic() {
-  fade.fadeOut(1000);
+  // fade.fadeOut(1000);
 }
 
 void restartMusic() {
@@ -291,10 +262,10 @@ void restartMusic() {
 
 
   // deselect all voices
-  voiceSelect.gain(0,0);
-  voiceSelect.gain(1,0);
-  voiceSelect.gain(2,0);
-  voiceSelect.gain(3,0);
+  // voiceSelect.gain(0,0);
+  // voiceSelect.gain(1,0);
+  // voiceSelect.gain(2,0);
+  // voiceSelect.gain(3,0);
 
   // setup current voice
   switch (voiceIdx) {
@@ -305,11 +276,12 @@ void restartMusic() {
       // }
       // chorusVoice1.voices(2);
 
-      voiceSelect.gain(0, 1.0);
+      // voiceSelect.gain(0, 1.0);
 
       break;
 
     case 1: // synth
+    /*
       osc1.begin(WAVEFORM_SQUARE);
       osc1.pulseWidth(0.5);
       osc1.amplitude(0.8);
@@ -331,6 +303,7 @@ void restartMusic() {
       filter2.resonance(0.6);
 
       voiceSelect.gain(1, 1.0);
+      */
 
       break;
 
@@ -341,7 +314,7 @@ void restartMusic() {
   }
 
   // turn audio on
-  fade.fadeIn(1000);
+  // fade.fadeIn(1000);
 
   // AudioInterrupts();
 }
@@ -384,7 +357,7 @@ void noteOn(byte note) {
 
   switch (voiceIdx) {
     case 0: // strings
-      string1.noteOn(mtof(note), 1.0);
+      stringVoice.noteOn(mtof(note), 1.0);
 
 //      Serial.print("note frequency: ");
 //      Serial.println(mtof(note));
@@ -393,6 +366,7 @@ void noteOn(byte note) {
       break;
 
     case 1: // synth
+    /*
       osc1.begin(WAVEFORM_PULSE);
       osc1.pulseWidth(0.5);
       osc1.amplitude(0.8);
@@ -404,6 +378,7 @@ void noteOn(byte note) {
       oscmix.gain(0, 0.6);
       oscmix.gain(1, 0.4);
 
+      */
       break;
 
     case 2: // drums
