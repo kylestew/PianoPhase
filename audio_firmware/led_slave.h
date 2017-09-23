@@ -1,0 +1,5 @@
+
+enum SLAVE_COMMAND {
+  BRIGHTNESS = 0x10,
+  NOTE_ON = 0xA0
+};

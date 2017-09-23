@@ -1,5 +1,4 @@
 #include <Bounce.h>
-#include <FastLED.h>
 #include <Metro.h>
 #define ENCODER_OPTIMIZE_INTERRUPTS
 #include <Encoder.h>
@@ -9,6 +8,7 @@
 #include <SPI.h>
 #include <SD.h>
 #include <SerialFlash.h>
+#include "led_slave.h"
 
 #define SERIAL_DEBUG     true
 
@@ -17,39 +17,54 @@
 
 // VOICE 1
 AudioSynthKarplusStrong  stringVoice;
+AudioEffectChorus        chorusVoice1;
+AudioConnection          pathCord0(stringVoice, 0, chorusVoice1, 0);
+#define CHORUS_DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
+short chorusDelayLine[CHORUS_DELAY_LENGTH];
+
+// VOICE SELECTION
+AudioMixer4              voiceSelect;
+AudioConnection          pathCord1(chorusVoice1, 0, voiceSelect, 0);
+// AudioConnection          pathCord2(stringVoice, 0, voiceSelect, 1);
+// AudioConnection          pathCord3(stringVoice, 0, voiceSelect, 2);
+// AudioConnection          pathCord4(stringVoice, 0, voiceSelect, 3);
+
+// DELAY
+AudioEffectDelay         phaseDelay;
+AudioMixer4              phaseMix;
+AudioConnection          pathCord5(voiceSelect, 0, phaseMix, 0);
+AudioConnection          pathCord6(voiceSelect, phaseDelay);
+AudioConnection          pathCord7(phaseDelay, 0, phaseMix, 1);
+
+// POST PROCESSING
+AudioEffectReverb        reverb;
+AudioConnection          pathCord8(phaseMix, reverb);
 
 // OUTPUT
+AudioEffectFade          fade;
 AudioControlSGTL5000     sgtl5000;
 AudioOutputI2S           i2sOut;
+// AudioConnection          pathCord9(reverb, fade);
+AudioConnection          pathCord9(phaseMix, fade);
+AudioConnection          pathCord10(fade, 0, i2sOut, 0);
+AudioConnection          pathCord11(fade, 0, i2sOut, 1);
 
-// WIRING
-AudioConnection          patchCord13(stringVoice, 0, i2sOut, 0);
-AudioConnection          patchCord14(stringVoice, 0, i2sOut, 1);
 
-// EFFECTS:
-// CHORUS
-// #define CHORUS_DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
-// short delayline[CHORUS_DELAY_LENGTH];
-
-// LEDS
-#define NUM_LEDS    24
-#define DATA_PIN    24   // YELLOW
-#define CLOCK_PIN   25   // GREEN
-CRGB leds [NUM_LEDS];
-const int DEFAULT_BRIGHT = 128;
-const int MIN_BRIGHT = 10;
-const int MAX_BRIGHT = 220;
-int brightness = DEFAULT_BRIGHT;
+// LED SLAVE
+int MIN_BRIGHT = 12;
+int MAX_BRIGHT = 220;
+int DEFAULT_BRIGHTNESS = 160;
+int brightness = DEFAULT_BRIGHTNESS;
 
 // VOLUME POT
 // TODO: average input to filter
 const int VOL_POT = A1; // PIN 15
 int volume = 0;
-const float MAX_VOLUME = 0.8;
+const float MAX_VOLUME = 0.55;
 
 // RING ENCODER
-const int ENCA = 8; // All pins interrupt on Teensy
-const int ENCB = 7;
+const int ENCA = 3; // All pins interrupt on Teensy
+const int ENCB = 2;
 long encPos = -999;
 Encoder enc(ENCA, ENCB);
 const int ENC_BUTTON = 1;
@@ -70,21 +85,25 @@ const int MAX_PHASE = 512;
 int phase = DEFAULT_PHASE;
 
 // TEMPO
-// TODO: update ranges for new 4x mode
-const int DEFAULT_TEMPO = 214; // synced to source material
+const int DEFAULT_TEMPO = 440; // synced to source material
 const int MIN_TEMPO = 0;
-const int MAX_TEMPO = 256;
-const int MIN_METRO = 60; // fastest BPM
+const int MAX_TEMPO = 512;
+const int MIN_METRO = 80; // fastest BPM
 const int MAX_METRO = 500; // slowest BPM
 Metro metro = Metro(100);
+Metro phaseMetro = Metro(0);
+bool phaseFired = false;
 int tempo = DEFAULT_TEMPO;
 int interval = 0; // ms to achieve tempo
 
 // MUSIC COORDINATOR
 #define mtof(N) ( (440 / 32.0) * pow(2,(N - 9) / 12.0) )
 const int NUM_VOICES = 4;
+bool playing = false;
 int voiceIdx = -1;
 int noteIdx = 0;
+byte note = 0;
+byte velocity = 0;
 const int PLAY_TIME = 90000; // 90 seconds
 Metro playTimer = Metro(0);
 
@@ -102,19 +121,16 @@ void setup() {
   pinMode(ledPins[BLUE], OUTPUT);
   digitalWrite(ledPins[BLUE], 1); // high = off
 
+  // connect to slave
+  Serial1.setTX(26);
+  Serial1.setRX(27);
+  Serial1.begin(115200);
+
   // audio setup
-  AudioMemory(24); // TODO: calc delay length
+  AudioMemory(96); // TODO: calc delay length
   sgtl5000.enable();
   sgtl5000.volume(volume);
   pinMode(VOL_POT, INPUT);
-
-  // LEDs
-  // pinMode(DATA_PIN, OUTPUT);
-  // pinMode(CLOCK_PIN, OUTPUT);
-  // FastLED.addLeds<WS2801, DATA_PIN, CLOCK_PIN, RGB>(leds, NUM_LEDS);
-	// FastLED.setBrightness(brightness);
-  // fill_solid(&(leds[0]), NUM_LEDS, CRGB(0, 0, 0));
-  // FastLED.clear();
 
   // start running!
   setMode(0);
@@ -122,9 +138,6 @@ void setup() {
 }
 
 void loop() {
-  // fill_solid(&(leds[0]), NUM_LEDS, CRGB(255, 0, 0));
-	// FastLED.show();
-
   // volume control
   int n = analogRead(VOL_POT) / 32; // 0 - 32
   if (n != volume) {
@@ -152,25 +165,38 @@ void loop() {
   }
 
   // play the music
-  if (playTimer.check() == 1) {
-    // // stop playing
-    // stopMusic();
-    //
-    // // stop taking input
-    // setMode(-1);
-    //
-    // // visually take a break
-    // interlude();
-    //
-    // // run again
-    // setMode(0);
-    // restartMusic();
-  } else if (metro.check() == 1) {
-    nextBeat();
+  if (playing == true ) {
+    if (metro.check() == 1) {
+      nextBeat();
+
+      phaseMetro.reset(); // sync with beat
+      phaseFired = false;
+    }
+
+    if (phaseFired == false && phaseMetro.check() == 1) {
+      // fire second channel note
+      sendNoteOn(1, note, velocity);
+      phaseFired = true;
+    }
   }
 
-  // TEMP: make sure LEDs light
-  // test();
+  // reset music on timer
+  if (playing == true && playTimer.check() == 1) {
+    // stop playing
+    stopMusic();
+
+    // stop taking input
+    setMode(-1);
+
+    // visually take a break
+    delay(4000);
+    // interlude();
+
+    // run again
+    restartMusic();
+    setMode(0);
+    playTimer.reset();
+  }
 }
 
 /* === MODES === */
@@ -209,7 +235,7 @@ int updateMode(int val) {
       return tempo;
     case 2:
       brightness = constrain(val, MIN_BRIGHT, MAX_BRIGHT);
-    	FastLED.setBrightness(brightness);
+      sendCommand(BRIGHTNESS, brightness);
       return brightness;
     default:
       return 0;
@@ -228,7 +254,8 @@ void updatePhase() {
   Serial.print(" :: ");
   Serial.println(delayMS);
 
-  // phaseDelay.delay(0, delayMS);
+  phaseDelay.delay(0, delayMS);
+  phaseMetro.interval(delayMS);
 }
 
 void updateMetro() {
@@ -240,7 +267,8 @@ void updateMetro() {
 /* === Music Coordinator === */
 
 void stopMusic() {
-  // fade.fadeOut(1000);
+  playing = false;
+  fade.fadeOut(2000);
 }
 
 void restartMusic() {
@@ -250,6 +278,7 @@ void restartMusic() {
   playTimer.interval(PLAY_TIME);
   phase = DEFAULT_PHASE;
   tempo = DEFAULT_TEMPO;
+  updatePhase();
   updateMetro();
 
   // increment voice
@@ -271,12 +300,13 @@ void restartMusic() {
   switch (voiceIdx) {
     case 0: // strings
       // enable chorus
-      // if (!chorusVoice1.begin(delayline, CHORUS_DELAY_LENGTH, 2)) {
-      //   Serial.println("AudioEffectChorus - begin failed");
-      // }
-      // chorusVoice1.voices(2);
+      if (!chorusVoice1.begin(chorusDelayLine, CHORUS_DELAY_LENGTH, 2)) {
+        Serial.println("AudioEffectChorus - begin failed");
+      }
+      chorusVoice1.voices(2);
 
       // voiceSelect.gain(0, 1.0);
+      reverb.reverbTime(0);
 
       break;
 
@@ -314,14 +344,19 @@ void restartMusic() {
   }
 
   // turn audio on
-  // fade.fadeIn(1000);
+  playing = true;
+  fade.fadeIn(2000);
 
   // AudioInterrupts();
 }
 
 void nextBeat() {
-  int note = phrase1[noteIdx];
-  noteOn(note);
+  // play note
+  note = phrase[noteIdx];
+  velocity = noteOn(note);
+
+  // send to slave
+  sendNoteOn(0, note, velocity);
 
   // increment note index
   noteIdx++;
@@ -330,7 +365,7 @@ void nextBeat() {
   }
 }
 
-void noteOn(byte note) {
+byte noteOn(byte note) {
   // AudioNoInterrupts();
 
   // drums
@@ -387,63 +422,23 @@ void noteOn(byte note) {
       break;
   }
 
+  return 120; // velocity we played at
+
   // AudioInterrupts();
 }
 
+/* === SLAVE LEDs === */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* === LEDs === */
-
-void interlude() {
-  // TODO: animate a 15second LED flourish
+void sendCommand(SLAVE_COMMAND command, byte value) {
+  // Serial.write(command);
+  // Serial.write(value);
 }
 
-void faderall() { for(int i = 0; i < NUM_LEDS; i++) { leds[i].nscale8(250); } }
-
-void test() {
-	static uint8_t hue = 0;
-	// First slide the led in one direction
-	for(int i = 0; i < NUM_LEDS; i++) {
-		// Set the i'th led to red
-		leds[i] = CHSV(hue++, 255, 255);
-		// Show the leds
-		FastLED.show();
-		// now that we've shown the leds, reset the i'th led to black
-		// leds[i] = CRGB::Black;
-		faderall();
-		// Wait a little bit before we loop around and do it again
-		delay(40);
-	}
-
-	// Now go in the other direction.
-	for(int i = (NUM_LEDS)-1; i >= 0; i--) {
-		// Set the i'th led to red
-		leds[i] = CHSV(hue++, 255, 255);
-		// Show the leds
-		FastLED.show();
-		// now that we've shown the leds, reset the i'th led to black
-		// leds[i] = CRGB::Black;
-		faderall();
-		// Wait a little bit before we loop around and do it again
-		delay(40);
-	}
+void sendNoteOn(byte channel, byte noteNum, byte velocity) {
+  // Serial.write(NOTE_ON);
+  // Serial.write(noteNum);
+  // Serial.write(velocity);
 }
-
 
 /* === Knob LED === */
 void setKnobRGB(int r, int g, int b) {
