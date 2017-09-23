@@ -10,23 +10,20 @@
 #include <SerialFlash.h>
 #include "led_slave.h"
 
-#define SERIAL_DEBUG     true
+#define SERIAL_DEBUG     false
 
 // AUDIO CONNECTIONS
 // RESERVED PINS: 9, 11, 13, 18, 19, 22, 23
 
 // VOICE 1
 AudioSynthKarplusStrong  stringVoice;
-AudioEffectChorus        chorusVoice1;
-// AudioConnection          pathCord0(stringVoice, 0, chorusVoice1, 0);
-#define CHORUS_DELAY_LENGTH (8*AUDIO_BLOCK_SAMPLES)
-#define CHORUS_VOICES 4
-short chorusDelayLine[CHORUS_DELAY_LENGTH];
+AudioFilterStateVariable        filter;
+AudioConnection          pathCord8(stringVoice, 0, filter, 0);
 
 // VOICE SELECTION
 AudioMixer4              voiceSelect;
 // AudioConnection          pathCord1(chorusVoice1, 0, voiceSelect, 0);
-AudioConnection          pathCord1(stringVoice, 0, voiceSelect, 0);
+AudioConnection          pathCord1(filter, 0, voiceSelect, 0);
 // AudioConnection          pathCord2(stringVoice, 0, voiceSelect, 1);
 // AudioConnection          pathCord3(stringVoice, 0, voiceSelect, 2);
 // AudioConnection          pathCord4(stringVoice, 0, voiceSelect, 3);
@@ -38,15 +35,10 @@ AudioConnection          pathCord5(voiceSelect, 0, phaseMix, 0);
 AudioConnection          pathCord6(voiceSelect, phaseDelay);
 AudioConnection          pathCord7(phaseDelay, 0, phaseMix, 1);
 
-// POST PROCESSING
-AudioEffectReverb        reverb;
-AudioConnection          pathCord8(phaseMix, reverb);
-
 // OUTPUT
 AudioEffectFade          fade;
 AudioControlSGTL5000     sgtl5000;
 AudioOutputI2S           i2sOut;
-// AudioConnection          pathCord9(reverb, fade);
 AudioConnection          pathCord9(phaseMix, fade);
 AudioConnection          pathCord10(fade, 0, i2sOut, 0);
 AudioConnection          pathCord11(fade, 0, i2sOut, 1);
@@ -59,10 +51,9 @@ int DEFAULT_BRIGHTNESS = 160;
 int brightness = DEFAULT_BRIGHTNESS;
 
 // VOLUME POT
-// TODO: average input to filter
 const int VOL_POT = A1; // PIN 15
 int volume = 0;
-const float MAX_VOLUME = 0.55;
+const float MAX_VOLUME = 0.74;
 
 // RING ENCODER
 const int ENCA = 3; // All pins interrupt on Teensy
@@ -80,7 +71,6 @@ int controlMode = 0;    // 0 (BLU) == Phase
                         // 2 (RED) == LED brightness
 
 // PHASE
-// TODO: fix phase scratching
 const int DEFAULT_PHASE = 0;
 const int MIN_PHASE = 0;
 const int MAX_PHASE = 512;
@@ -130,7 +120,7 @@ void setup() {
   Serial1.begin(115200);
 
   // audio setup
-  AudioMemory(96); // TODO: calc delay length
+  AudioMemory(512);
   sgtl5000.enable();
   sgtl5000.volume(volume);
   pinMode(VOL_POT, INPUT);
@@ -142,14 +132,10 @@ void setup() {
 
 void loop() {
   // volume control
-  int n = analogRead(VOL_POT) / 32; // 0 - 32
+  int n = analogRead(VOL_POT) / 128;
   if (n != volume) {
     volume = n;
-
-    Serial.print("VOL: ");
-    Serial.println(volume);
-
-    sgtl5000.volume(map((float)n, 0.0, 32.0, 0.0, MAX_VOLUME));
+    sgtl5000.volume(map((float)n, 0.0, 8.0, 0.3, MAX_VOLUME));
   }
 
   // mode switch
@@ -197,8 +183,7 @@ void playLoop() {
     setMode(-1);
 
     // visually take a break
-    delay(4000);
-    // interlude();
+    delay(12000);
 
     // run again
     restartMusic();
@@ -254,13 +239,13 @@ int updateMode(int val) {
 
 void updatePhase() {
   // tempo is percentage of interval which is determined by tempo
-  int delayMS = map(phase, MIN_PHASE, MAX_PHASE, 0, interval);
+  int delayMS = map(phase, MIN_PHASE, MAX_PHASE, 0, interval - 4);
 
-  // Serial.print(phase);
-  // Serial.print(" :: ");
-  // Serial.print(interval);
-  // Serial.print(" :: ");
-  // Serial.println(delayMS);
+  Serial.print(phase);
+  Serial.print(" :: ");
+  Serial.print(interval);
+  Serial.print(" :: ");
+  Serial.println(delayMS);
 
   phaseDelay.delay(0, delayMS);
   phaseMetro.interval(delayMS);
@@ -312,14 +297,10 @@ void restartMusic() {
   // setup current voice
   switch (voiceIdx) {
     case 0: // strings
-      // enable chorus
-      if (!chorusVoice1.begin(chorusDelayLine, CHORUS_DELAY_LENGTH, CHORUS_VOICES)) {
-        Serial.println("AudioEffectChorus - begin failed");
-      }
-      chorusVoice1.voices(CHORUS_VOICES);
-
-      // voiceSelect.gain(0, 1.0);
-      reverb.reverbTime(0);
+      // Butterworth filter, 12 db/octave
+      filter.frequency(840);
+      filter.resonance(.8);
+      // biquad.setLowpass(0, 800, 0.707);
 
       break;
 
@@ -453,14 +434,14 @@ void sendCommand(SLAVE_COMMAND command, byte value) {
 }
 
 void sendNoteOn(byte channel, byte beat, byte noteNum, byte velocity) {
-  if (SERIAL_DEBUG) {
-    Serial.print("Slave Note On: ");
-    Serial.print(channel);
-    Serial.print(" :: ");
-    Serial.print(beat);
-    Serial.print(" :: ");
-    Serial.println(noteNum);
-  }
+  // if (SERIAL_DEBUG) {
+  //   Serial.print("Slave Note On: ");
+  //   Serial.print(channel);
+  //   Serial.print(" :: ");
+  //   Serial.print(beat);
+  //   Serial.print(" :: ");
+  //   Serial.println(noteNum);
+  // }
 
   Serial1.write(NOTE_ON);
   Serial1.write(channel);
