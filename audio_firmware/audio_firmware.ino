@@ -18,13 +18,15 @@
 // VOICE 1
 AudioSynthKarplusStrong  stringVoice;
 AudioEffectChorus        chorusVoice1;
-AudioConnection          pathCord0(stringVoice, 0, chorusVoice1, 0);
-#define CHORUS_DELAY_LENGTH (16*AUDIO_BLOCK_SAMPLES)
+// AudioConnection          pathCord0(stringVoice, 0, chorusVoice1, 0);
+#define CHORUS_DELAY_LENGTH (8*AUDIO_BLOCK_SAMPLES)
+#define CHORUS_VOICES 4
 short chorusDelayLine[CHORUS_DELAY_LENGTH];
 
 // VOICE SELECTION
 AudioMixer4              voiceSelect;
-AudioConnection          pathCord1(chorusVoice1, 0, voiceSelect, 0);
+// AudioConnection          pathCord1(chorusVoice1, 0, voiceSelect, 0);
+AudioConnection          pathCord1(stringVoice, 0, voiceSelect, 0);
 // AudioConnection          pathCord2(stringVoice, 0, voiceSelect, 1);
 // AudioConnection          pathCord3(stringVoice, 0, voiceSelect, 2);
 // AudioConnection          pathCord4(stringVoice, 0, voiceSelect, 3);
@@ -52,7 +54,7 @@ AudioConnection          pathCord11(fade, 0, i2sOut, 1);
 
 // LED SLAVE
 int MIN_BRIGHT = 12;
-int MAX_BRIGHT = 220;
+int MAX_BRIGHT = 230;
 int DEFAULT_BRIGHTNESS = 160;
 int brightness = DEFAULT_BRIGHTNESS;
 
@@ -102,9 +104,10 @@ const int NUM_VOICES = 4;
 bool playing = false;
 int voiceIdx = -1;
 int noteIdx = 0;
+int prevNoteIdx = 0;
 byte note = 0;
 byte velocity = 0;
-const int PLAY_TIME = 90000; // 90 seconds
+const int PLAY_TIME = 120000; // 120 seconds
 Metro playTimer = Metro(0);
 
 void setup() {
@@ -164,24 +167,29 @@ void loop() {
     enc.write(encPos); // write bounded value back to encoder
   }
 
-  // play the music
   if (playing == true ) {
-    if (metro.check() == 1) {
-      nextBeat();
+    playLoop();
+  }
+}
 
-      phaseMetro.reset(); // sync with beat
-      phaseFired = false;
-    }
+void playLoop() {
+  // play the music
+  if (metro.check() == 1) {
+    nextBeat();
 
-    if (phaseFired == false && phaseMetro.check() == 1) {
-      // fire second channel note
-      sendNoteOn(1, note, velocity);
-      phaseFired = true;
-    }
+    phaseMetro.reset(); // sync with beat
+    phaseFired = false;
+  }
+
+  if (phaseFired == false && phaseMetro.check() == 1) {
+    // fire second channel note
+    // index is previous note played
+    sendNoteOn(1, prevNoteIdx, note, velocity);
+    phaseFired = true;
   }
 
   // reset music on timer
-  if (playing == true && playTimer.check() == 1) {
+  if (playTimer.check() == 1) {
     // stop playing
     stopMusic();
 
@@ -248,11 +256,11 @@ void updatePhase() {
   // tempo is percentage of interval which is determined by tempo
   int delayMS = map(phase, MIN_PHASE, MAX_PHASE, 0, interval);
 
-  Serial.print(phase);
-  Serial.print(" :: ");
-  Serial.print(interval);
-  Serial.print(" :: ");
-  Serial.println(delayMS);
+  // Serial.print(phase);
+  // Serial.print(" :: ");
+  // Serial.print(interval);
+  // Serial.print(" :: ");
+  // Serial.println(delayMS);
 
   phaseDelay.delay(0, delayMS);
   phaseMetro.interval(delayMS);
@@ -278,8 +286,10 @@ void restartMusic() {
   playTimer.interval(PLAY_TIME);
   phase = DEFAULT_PHASE;
   tempo = DEFAULT_TEMPO;
+  noteIdx = 0;
   updatePhase();
   updateMetro();
+  metro.reset();
 
   // increment voice
   voiceIdx++;
@@ -300,10 +310,10 @@ void restartMusic() {
   switch (voiceIdx) {
     case 0: // strings
       // enable chorus
-      if (!chorusVoice1.begin(chorusDelayLine, CHORUS_DELAY_LENGTH, 2)) {
+      if (!chorusVoice1.begin(chorusDelayLine, CHORUS_DELAY_LENGTH, CHORUS_VOICES)) {
         Serial.println("AudioEffectChorus - begin failed");
       }
-      chorusVoice1.voices(2);
+      chorusVoice1.voices(CHORUS_VOICES);
 
       // voiceSelect.gain(0, 1.0);
       reverb.reverbTime(0);
@@ -356,9 +366,10 @@ void nextBeat() {
   velocity = noteOn(note);
 
   // send to slave
-  sendNoteOn(0, note, velocity);
+  sendNoteOn(0, noteIdx, note, velocity);
 
   // increment note index
+  prevNoteIdx = noteIdx;
   noteIdx++;
   if (noteIdx >= 12) {
     noteIdx = 0;
@@ -430,14 +441,25 @@ byte noteOn(byte note) {
 /* === SLAVE LEDs === */
 
 void sendCommand(SLAVE_COMMAND command, byte value) {
-  // Serial.write(command);
-  // Serial.write(value);
+  Serial1.write(command);
+  Serial1.write(value);
 }
 
-void sendNoteOn(byte channel, byte noteNum, byte velocity) {
-  // Serial.write(NOTE_ON);
-  // Serial.write(noteNum);
-  // Serial.write(velocity);
+void sendNoteOn(byte channel, byte beat, byte noteNum, byte velocity) {
+  if (SERIAL_DEBUG) {
+    Serial.print("Slave Note On: ");
+    Serial.print(channel);
+    Serial.print(" :: ");
+    Serial.print(beat);
+    Serial.print(" :: ");
+    Serial.println(noteNum);
+  }
+
+  Serial1.write(NOTE_ON);
+  Serial1.write(channel);
+  Serial1.write(beat);
+  Serial1.write(noteNum);
+  Serial1.write(velocity);
 }
 
 /* === Knob LED === */
