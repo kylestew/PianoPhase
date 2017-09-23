@@ -107,7 +107,7 @@ int noteIdx = 0;
 int prevNoteIdx = 0;
 byte note = 0;
 byte velocity = 0;
-const int PLAY_TIME = 120000; // 120 seconds
+const int PLAY_TIME = 150000;
 Metro playTimer = Metro(0);
 
 void setup() {

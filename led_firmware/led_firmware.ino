@@ -1,4 +1,5 @@
 #include <FastLED.h>
+#include <Metro.h>
 #include "led_slave.h"
 
 #define SERIAL_DEBUG     true
@@ -10,6 +11,19 @@
 CRGB leds [NUM_LEDS];
 int brightness = 120;
 
+// Commands
+SLAVE_COMMAND mode = INVALID;
+int byteNum = 0;
+// note on command
+int channel = -1;
+int beat = -1;
+int noteNum = -1;
+int velocity = -1;
+
+// Animation Settings
+// fade settings
+Metro fadeMetro = Metro(8);
+
 void setup() {
   if (SERIAL_DEBUG) {
     Serial.begin(115200);
@@ -20,26 +34,21 @@ void setup() {
   pinMode(CLOCK_PIN, OUTPUT);
   FastLED.addLeds<WS2801, DATA_PIN, CLOCK_PIN, RGB>(leds, NUM_LEDS);
 	FastLED.setBrightness(brightness);
+  FastLED.setCorrection(Typical8mmPixel);
+  FastLED.setTemperature(FullSpectrumFluorescent);
   fill_solid(&(leds[0]), NUM_LEDS, CRGB(0, 0, 0));
   FastLED.clear();
 
   // Master
   Serial1.begin(115200);
 
+  // clear LEDs
   fill_solid(&(leds[0]), NUM_LEDS, CRGB(0, 0, 0));
   FastLED.show();
+
+  // prep for animation
+  reset();
 }
-
-SLAVE_COMMAND mode = INVALID;
-int byteNum = 0;
-
-// note on command
-int channel = -1;
-int beat = -1;
-int noteNum = -1;
-int velocity = -1;
-
-int idx = 0;
 
 void loop() {
   // incoming commands
@@ -52,6 +61,8 @@ void loop() {
       mode = BRIGHTNESS;
       byteNum = 0;
       Serial.print("BRIGHTNESS: ");
+    } else if (bite == RESET) {
+      Serial.print("RESET");
     } else if (bite == NOTE_ON) {
       mode = NOTE_ON;
       byteNum = 0;
@@ -78,43 +89,122 @@ void loop() {
     }
   }
 
-  // fade and show updates to pixels every frame
-  fadeAllPixels();
-  // fill_solid(&(leds[0]), NUM_LEDS, CRGB(0, 0, 0));
-
-  // setPixel(0, idx, CHSV(128, 255, 255));
-  // setPixel(1, idx, CHSV(64, 255, 255));
-  //
-  FastLED.show();
-  //
-  // delay(500);
-
-  idx++;
-  if (idx >= 12) idx = 0;
+  // animation loop
+  if (fadeMetro.check() == 1) {
+    step();
+    fadeAllPixels();
+    FastLED.show();
+  }
 }
 
-/* === Note Events == */
+/* === Animation == */
+
+enum ANIMATION_TYPE {
+  HUE,
+  HUE_SHIFT,
+  PURPLE
+};
+const int ANIMATION_TYPE_COUNT = 3;
+ANIMATION_TYPE animationType = HUE;
+
+int fadeAmount = 2;
+int hueShift = 0;
+
+void reset() {
+  // next
+  switch (animationType) {
+    case HUE:
+      animationType = HUE_SHIFT;
+      break;
+    case HUE_SHIFT:
+      animationType = PURPLE;
+      break;
+    case PURPLE:
+      animationType = HUE;
+      break;
+    default:
+      break;
+  }
+
+  // setup
+  switch (animationType) {
+    case HUE:
+      // Note number used to select HUE of note
+      break;
+
+    case HUE_SHIFT:
+      // Note number used to select HUE of note
+      // hue wheel rotates CCW
+      hueShift = 0;
+      break;
+
+    case PURPLE:
+      // Purple heat fades to blue
+      break;
+
+    default:
+      break;
+  }
+}
+
+void step() {
+  switch (animationType) {
+    case HUE:
+      break;
+
+    case HUE_SHIFT:
+      hueShift += 1;
+      break;
+
+    case PURPLE:
+      // Purple heat fades to blue
+      break;
+    default:
+      break;
+  }
+
+}
 
 void noteOn(int channel, int beat, int noteNum, int velocity) {
-  Serial.print("NOTE ON: ");
-  Serial.print(channel);
-  Serial.print(" :: ");
-  Serial.print(beat);
-  Serial.print(" :: ");
-  Serial.print(noteNum);
-  Serial.print(" :: ");
-  Serial.println(velocity);
+  // Serial.print("NOTE ON: ");
+  // Serial.print(channel);
+  // Serial.print(" :: ");
+  // Serial.print(beat);
+  // Serial.print(" :: ");
+  // Serial.print(noteNum);
+  // Serial.print(" :: ");
+  // Serial.println(velocity);
 
-  // translate note number to hue
-  // int hue = map(noteNum, 64, 74, 0, 255);
-  // 64 - 74
-  int hue = channel == 0 ? 96 : 160;
-  setPixel(channel, beat, CHSV(hue, 255, 255));
+  int hue;
+  switch (animationType) {
+    case HUE:
+      // Note number used to select HUE of note
+      // translate note number to hue
+      hue = map(noteNum, 62, 76, 0, 255);
+      setPixel(channel, beat, CHSV(hue, 255, 255));
 
-  // IDEAS:
-  // + Circle is color wheel
-  // + Each note spans the color wheel
-  // + Rotating color wheel with bursts
+      break;
+
+    case HUE_SHIFT:
+      // Note number used to select HUE of note
+      // hue wheel rotates CCW
+      hue = map(noteNum, 62, 76, 0, 255);
+      hue += hueShift;
+      Serial.println(hue);
+      setPixel(channel, beat, CHSV(hue, 255, 255));
+
+      break;
+
+    case PURPLE:
+      // Purple heat fades to blue
+      setPixel(channel, beat, CRGB::Magenta);
+      break;
+
+    default:
+      break;
+  }
+
+  FastLED.show();
 }
 
 /* === LEDs === */
@@ -127,7 +217,31 @@ void setPixel(int channel, int index, CHSV color) {
   leds[idx] = color;
 }
 
-void fadeAllPixels() { for(int i = 0; i < NUM_LEDS; i++) { leds[i].nscale8(250); } }
+void setPixel(int channel, int index, CRGB color) {
+  int idx = channel == 0 ? channel0[index] : channel1[index];
+  leds[idx] = color;
+}
+
+void fadeAllPixels() {
+  switch (animationType) {
+    case HUE:
+    case HUE_SHIFT:
+      // simple fade out
+      for(int i = 0; i < NUM_LEDS; i++) { leds[i].fadeToBlackBy(fadeAmount); }
+      break;
+
+    case PURPLE:
+      // blend toward another color
+      for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = nblend(leds[i], CRGB::LightSeaGreen, 1.0);
+      }
+
+      break;
+
+    default:
+      break;
+  }
+}
 
 
 
